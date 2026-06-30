@@ -6,6 +6,7 @@ if TYPE_CHECKING:
     from cardinal import Cardinal
 
 import os
+import re
 import json
 import html
 import logging
@@ -272,10 +273,70 @@ def create_payment_link(amount: str) -> str:
         save_config()
 
     ok = doc.get("ok")
-    if isinstance(ok, dict) and ok.get("$"):
-        path = ok["$"]
-        return path if path.startswith("http") else BILLING_HOST + path
-    raise BillmgrError("Платёж создан, но ссылка не получена.")
+    if not (isinstance(ok, dict) and ok.get("$")):
+        raise BillmgrError("Платёж создан, но ссылка не получена.")
+    path = ok["$"]
+    billmgr_url = path if path.startswith("http") else BILLING_HOST + path
+
+    # Ссылка billmgr (/mancgi/ycpayment) открывается только с активной сессией
+    # биллинга. Разворачиваем её в прямую ссылку платёжного шлюза (ЮKassa и т.п.),
+    # которую можно открыть в любом браузере.
+    gateway_url = resolve_gateway_url(billmgr_url)
+    return gateway_url or billmgr_url
+
+
+_REDIRECT_PATTERNS = [
+    re.compile(r"""location\.(?:assign|replace)\(\s*['\"]([^'\"]+)['\"]""", re.I),
+    re.compile(r"""window\.location(?:\.href)?\s*=\s*['\"]([^'\"]+)['\"]""", re.I),
+    re.compile(r"""location\.href\s*=\s*['\"]([^'\"]+)['\"]""", re.I),
+    re.compile(r"""<meta[^>]+http-equiv=['\"]?refresh['\"]?[^>]+content=['\"]?\s*\d+\s*;\s*url=([^'\"> ]+)""", re.I),
+    re.compile(r"""<form[^>]+action=['\"]([^'\"]+)['\"]""", re.I),
+]
+
+
+def _extract_redirect(html_text: str) -> Optional[str]:
+    """Достаёт URL редиректа (JS/meta/form) из HTML-страницы billmgr."""
+    for pattern in _REDIRECT_PATTERNS:
+        m = pattern.search(html_text)
+        if m:
+            url = m.group(1).strip()
+            url = url.replace("&amp;", "&")
+            if url.startswith("//"):
+                url = "https:" + url
+            return url
+    return None
+
+
+def resolve_gateway_url(billmgr_url: str, max_hops: int = 6) -> Optional[str]:
+    """
+    Идёт по цепочке редиректов billmgr (HTTP 3xx + JS/meta/form) с активной
+    сессией и возвращает первую внешнюю ссылку платёжного шлюза.
+    Возвращает None, если развернуть не удалось.
+    """
+    session = _session()
+    url = billmgr_url
+    last_external: Optional[str] = None
+    try:
+        for _ in range(max_hops):
+            resp = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+            final_url = resp.url
+            if BILLING_HOST not in final_url:
+                last_external = final_url
+                break
+            nxt = _extract_redirect(resp.text or "")
+            if not nxt:
+                break
+            if nxt.startswith("/"):
+                nxt = BILLING_HOST + nxt
+            if BILLING_HOST not in nxt:
+                last_external = nxt
+                break
+            url = nxt
+    except Exception as e:
+        logger.error(f"{LOGGER_PREFIX} resolve_gateway_url: {e}")
+        logger.debug("TRACEBACK", exc_info=True)
+        return None
+    return last_external
 
 
 # --------------------------------------------------------------------------- #
