@@ -511,7 +511,7 @@ def init_commands(cardinal: "Cardinal", *args) -> None:
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith(f"{CB}m:"))
     def cb_pick_method(call: types.CallbackQuery):
-        method_id = call.data.split(":", 1)[1]
+        method_id = call.data[len(f"{CB}m:"):]
         name = ""
         try:
             for m in list_methods(config.get("payment_currency", "126")):
@@ -552,7 +552,7 @@ def init_commands(cardinal: "Cardinal", *args) -> None:
 
     @bot.callback_query_handler(func=lambda c: c.data.startswith(f"{CB}payer_set:"))
     def cb_payer_set(call: types.CallbackQuery):
-        field = call.data.split(":", 1)[1]
+        field = call.data[len(f"{CB}payer_set:"):]
         titles = {"person": "ФИО", "postcode": "индекс", "city": "город", "address": "адрес"}
         msg = bot.send_message(call.message.chat.id, f"Введите {titles.get(field, field)}:")
         bot.register_next_step_handler(msg, step_payer_set, field)
